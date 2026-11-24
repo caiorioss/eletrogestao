@@ -28,3 +28,7 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Project rules
+- All energy/cost math lives in `src/lib/energy.ts` (pure functions, covered by `src/lib/energy.test.ts`); pages only render its results, so formulas stay testable and in one place.
+- Shared site chrome (header/footer) is rendered in `src/routes/__root.tsx`; each page is its own route file with its own `head()`.
