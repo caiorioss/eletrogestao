@@ -240,3 +240,158 @@ const num0 = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 0 });
 export const fmtBRL = (v: number) => brl.format(v);
 export const fmtNum = (v: number) => num.format(v);
 export const fmtInt = (v: number) => num0.format(v);
+
+/* ───────────── Nota de êxito da gestão ───────────── */
+
+/** Pesos (somam 100) de cada critério da nota de gestão. */
+export const SCORE_WEIGHTS = { energy: 40, finance: 30, production: 30 } as const;
+/** Horizonte para avaliar o retorno financeiro, em meses (5 anos). */
+export const SCORE_HORIZON_MONTHS = 60;
+/** Perda de trabalho útil que a operação absorve sem prejuízo (folga operacional), em %. */
+export const PRODUCTION_SLACK_PERCENT = 10;
+const MAX_TIME_CUT = 50;
+/** Perda de trabalho útil a partir da qual o setor para de cumprir sua função, em %. */
+const MAX_SERVICE_LOSS = 50;
+
+/** Fração dos pontos de operação mantida para uma perda de trabalho útil (em %). */
+export function productionKept(lossPercent: number): number {
+  const loss = Math.min(Math.max(lossPercent, 0), MAX_SERVICE_LOSS);
+  if (loss <= PRODUCTION_SLACK_PERCENT) return 1;
+  return 1 - (loss - PRODUCTION_SLACK_PERCENT) / (MAX_SERVICE_LOSS - PRODUCTION_SLACK_PERCENT);
+}
+
+/**
+ * Trabalho útil mensal (unidades × horas ativas). Horas ociosas não contam, e o planejamento
+ * entrega a mesma produção em menos horas, por isso não reduz o trabalho útil.
+ */
+export function usefulWork(eq: Equipment, d: Decisions): number {
+  const timeFactor = 1 - Math.min(Math.max(d.reduceTimePercent, 0), MAX_TIME_CUT) / 100;
+  const active = eq.hoursPerDay - Math.min(eq.idleHoursPerDay, eq.hoursPerDay);
+  return eq.quantity * active * timeFactor * eq.daysPerMonth;
+}
+
+/**
+ * Operação preservada (0 a 1): média, por equipamento, do trabalho útil mantido em relação à
+ * empresa original. Cada equipamento pesa igual, pois cada setor precisa continuar funcionando.
+ */
+export function operationKept(baseline: Equipment[], equipment: Equipment[], d: Decisions): number {
+  if (baseline.length === 0) return 1;
+  const total = baseline.reduce((sum, base) => {
+    const eq = equipment.find((e) => e.id === base.id);
+    const before = usefulWork(base, NO_DECISIONS);
+    if (before <= 0) return sum + 1;
+    const ratio = eq ? Math.min(1, usefulWork(eq, d) / before) : 0;
+    return sum + productionKept((1 - ratio) * 100);
+  }, 0);
+  return total / baseline.length;
+}
+
+/** Valor financeiro no horizonte: economia líquida acumulada − investimento. */
+export function financialValue(r: SimulationResult): number {
+  return r.netMonthlySavings * SCORE_HORIZON_MONTHS - r.investment;
+}
+
+/** Todas as combinações de decisões que o simulador permite (redução de 5 em 5%). */
+export function allDecisionSets(): Decisions[] {
+  const out: Decisions[] = [];
+  for (let m = 0; m < 16; m++) {
+    for (let cut = 0; cut <= MAX_TIME_CUT; cut += 5) {
+      out.push({
+        efficientEquipment: (m & 1) > 0,
+        turnOffIdle: (m & 2) > 0,
+        betterPlanning: (m & 4) > 0,
+        maintenance: (m & 8) > 0,
+        reduceTimePercent: cut,
+      });
+    }
+  }
+  return out;
+}
+
+export interface ScoreResult {
+  /** Êxito da gestão, de 0 a 100 (100 = melhor combinação de decisões na empresa original). */
+  percent: number;
+  /** Pontos de cada critério (máx. = peso). */
+  energy: number;
+  finance: number;
+  production: number;
+  level: "risco" | "regular" | "boa" | "exemplar";
+}
+
+export const SCORE_LEVEL_LABEL: Record<ScoreResult["level"], string> = {
+  risco: "Gestão em risco",
+  regular: "Gestão regular",
+  boa: "Boa gestão",
+  exemplar: "Gestão exemplar",
+};
+
+export function scoreLevel(percent: number): ScoreResult["level"] {
+  if (percent >= 90) return "exemplar";
+  if (percent >= 70) return "boa";
+  if (percent >= 40) return "regular";
+  return "risco";
+}
+
+interface RawPoints {
+  reduction: number;
+  value: number;
+  production: number;
+}
+
+/** Resultado das escolhas (planilha + decisões) comparado com a empresa original sem decisões. */
+function rawPoints(
+  baseline: Equipment[],
+  equipment: Equipment[],
+  decisions: Decisions,
+  tariff: number,
+  maintenanceMonthlyCost: number,
+): RawPoints {
+  const baseKWh = simulate(baseline, NO_DECISIONS, tariff, 0).kWhBefore;
+  const r = simulate(equipment, decisions, tariff, maintenanceMonthlyCost);
+  const reduction = baseKWh - r.kWhAfter;
+  const netMonthly = cost(reduction, tariff) - r.maintenanceMonthlyCost;
+  return {
+    reduction,
+    value: netMonthly * SCORE_HORIZON_MONTHS - r.investment,
+    production: operationKept(baseline, equipment, decisions) * SCORE_WEIGHTS.production,
+  };
+}
+
+const clamp = (v: number, max: number) => Math.min(max, Math.max(0, v));
+
+/**
+ * Nota de êxito: 40 pts pela redução de kWh, 30 pelo valor financeiro em 5 anos e 30 pela
+ * operação preservada, todos medidos contra a empresa original. Quantidade, horas por dia e
+ * decisões contam. A referência (100%) é a melhor combinação de decisões na empresa original.
+ */
+export function managementScore(
+  baseline: Equipment[],
+  equipment: Equipment[],
+  decisions: Decisions,
+  tariff: number,
+  maintenanceMonthlyCost: number,
+): ScoreResult {
+  const refs = allDecisionSets().map((d) => rawPoints(baseline, baseline, d, tariff, maintenanceMonthlyCost));
+  const bestReduction = Math.max(0, ...refs.map((p) => p.reduction));
+  const bestValue = Math.max(0, ...refs.map((p) => p.value));
+
+  const points = (p: RawPoints) => {
+    const energy =
+      bestReduction > 0 ? clamp((p.reduction / bestReduction) * SCORE_WEIGHTS.energy, SCORE_WEIGHTS.energy) : 0;
+    const finance =
+      bestValue > 0 ? clamp((p.value / bestValue) * SCORE_WEIGHTS.finance, SCORE_WEIGHTS.finance) : 0;
+    return { energy, finance, production: p.production, total: energy + finance + p.production };
+  };
+
+  const best = Math.max(...refs.map((p) => points(p).total));
+  const mine = points(rawPoints(baseline, equipment, decisions, tariff, maintenanceMonthlyCost));
+  const percent = best > 0 ? clamp((mine.total / best) * 100, 100) : 0;
+
+  return {
+    percent,
+    energy: mine.energy,
+    finance: mine.finance,
+    production: mine.production,
+    level: scoreLevel(percent),
+  };
+}

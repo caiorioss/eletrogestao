@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import {
   CalendarClock,
   Clock,
+  Trophy,
   Lightbulb,
   PowerOff,
   RotateCcw,
@@ -24,11 +25,17 @@ import {
   DEFAULT_TARIFF,
   NO_DECISIONS,
   PLANNING_PRODUCTION_HOURS_CUT,
+  PRODUCTION_SLACK_PERCENT,
+  SCORE_HORIZON_MONTHS,
+  SCORE_LEVEL_LABEL,
+  SCORE_WEIGHTS,
   fmtBRL,
   fmtInt,
   fmtNum,
+  managementScore,
   simulate,
   type Decisions,
+  type ScoreResult,
   type Equipment,
 } from "@/lib/energy";
 import { cn } from "@/lib/utils";
@@ -63,6 +70,11 @@ function Simulator() {
 
   const r = useMemo(
     () => simulate(equipment, decisions, tariff, maintCost),
+    [equipment, decisions, tariff, maintCost],
+  );
+
+  const score = useMemo(
+    () => managementScore(DEFAULT_EQUIPMENT, equipment, decisions, tariff, maintCost),
     [equipment, decisions, tariff, maintCost],
   );
 
@@ -200,6 +212,8 @@ function Simulator() {
 
         {/* Resultados */}
         <section className="flex min-w-0 flex-col gap-6">
+          <ScoreBar score={score} />
+
           <div className="grid gap-px overflow-hidden rounded-sm border bg-border sm:grid-cols-2">
             <Kpi label="Antes" tone="muted">
               <p className="tabular text-3xl font-semibold">{fmtInt(r.kWhBefore)} kWh</p>
@@ -491,6 +505,97 @@ function Stat({ label, value, hint, highlight }: { label: string; value: string;
       <p className="eyebrow text-muted-foreground">{label}</p>
       <p className={cn("tabular mt-2 text-xl font-semibold", highlight && "text-saving")}>{value}</p>
       <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+const LEVEL_STYLE: Record<ScoreResult["level"], { bar: string; text: string }> = {
+  risco: { bar: "bg-destructive", text: "text-destructive" },
+  regular: { bar: "bg-electric", text: "text-foreground" },
+  boa: { bar: "bg-saving", text: "text-saving" },
+  exemplar: { bar: "bg-saving", text: "text-saving" },
+};
+
+function ScoreBar({ score }: { score: ScoreResult }) {
+  const style = LEVEL_STYLE[score.level];
+  const pct = Math.round(score.percent * 10) / 10;
+  const parts = [
+    { label: "Energia economizada", value: score.energy, max: SCORE_WEIGHTS.energy },
+    { label: `Retorno em ${SCORE_HORIZON_MONTHS / 12} anos`, value: score.finance, max: SCORE_WEIGHTS.finance },
+    { label: "Operação preservada", value: score.production, max: SCORE_WEIGHTS.production },
+  ];
+
+  return (
+    <div className="rounded-sm border bg-card p-5 shadow-ledger">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Trophy className={cn("size-6", style.text)} />
+          <div>
+            <p className="eyebrow text-muted-foreground">Êxito da administração</p>
+            <p className={cn("text-lg font-bold", style.text)}>{SCORE_LEVEL_LABEL[score.level]}</p>
+          </div>
+        </div>
+        <p className={cn("tabular text-4xl font-semibold", style.text)} aria-live="polite">
+          {fmtNum(pct)}%
+        </p>
+      </div>
+
+      <div
+        className="relative mt-4 h-4 overflow-hidden rounded-sm bg-secondary"
+        role="progressbar"
+        aria-label="Porcentagem de êxito na administração"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+      >
+        <div className={cn("h-full transition-[width] duration-500", style.bar)} style={{ width: `${pct}%` }} />
+        {[40, 70, 90].map((mark) => (
+          <span
+            key={mark}
+            className="absolute inset-y-0 w-px bg-foreground/25"
+            style={{ left: `${mark}%` }}
+            aria-hidden
+          />
+        ))}
+      </div>
+      <div className="tabular relative mt-1 h-4 text-[0.65rem] text-muted-foreground" aria-hidden>
+        {[
+          [0, "Risco"],
+          [40, "Regular"],
+          [70, "Boa"],
+          [90, "Exemplar"],
+        ].map(([at, label]) => (
+          <span key={label} className="absolute" style={{ left: `${at}%` }}>
+            {label}
+          </span>
+        ))}
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        {parts.map((p) => (
+          <div key={p.label}>
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">{p.label}</span>
+              <span className="tabular font-semibold">
+                {fmtNum(p.value)}/{p.max}
+              </span>
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-sm bg-secondary">
+              <div
+                className="h-full bg-primary transition-[width] duration-500"
+                style={{ width: `${(p.value / p.max) * 100}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <p className="mt-4 text-xs text-muted-foreground">
+        A nota compara suas escolhas (decisões, quantidades e horas por dia) com a empresa original; 100%
+        é a melhor combinação de decisões. Cortar mais de {PRODUCTION_SLACK_PERCENT}% do trabalho útil de um
+        equipamento economiza energia, mas prejudica a operação. Desafie os colegas: quem chega mais perto de
+        100%?
+      </p>
     </div>
   );
 }
