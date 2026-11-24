@@ -78,6 +78,9 @@ function Simulator() {
     [equipment, decisions, tariff, maintCost],
   );
 
+  const [checkedScore, setCheckedScore] = useState<ScoreResult | null>(null);
+  const isStale = checkedScore !== null && checkedScore !== score;
+
   const set = <K extends keyof Decisions>(k: K, v: Decisions[K]) =>
     setDecisions((d) => ({ ...d, [k]: v }));
 
@@ -89,6 +92,7 @@ function Simulator() {
     setDecisions(NO_DECISIONS);
     setTariff(DEFAULT_TARIFF);
     setMaintCost(DEFAULT_MAINTENANCE_COST);
+    setCheckedScore(null);
   };
 
   const reduction = r.kWhBefore > 0 ? (1 - r.kWhAfter / r.kWhBefore) * 100 : 0;
@@ -212,7 +216,17 @@ function Simulator() {
 
         {/* Resultados */}
         <section className="flex min-w-0 flex-col gap-6">
-          <ScoreBar score={score} />
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={() => setCheckedScore(score)} className="bg-electric text-electric-foreground hover:bg-electric/90">
+              <Trophy /> Verificar análise
+            </Button>
+            {isStale && (
+              <span className="text-xs text-muted-foreground">
+                Você mudou as escolhas. Verifique de novo para atualizar a nota.
+              </span>
+            )}
+          </div>
+          {checkedScore && <ScoreBar score={checkedScore} />}
 
           <div className="grid gap-px overflow-hidden rounded-sm border bg-border sm:grid-cols-2">
             <Kpi label="Antes" tone="muted">
